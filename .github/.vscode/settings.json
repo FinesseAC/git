@@ -1,0 +1,8 @@
+/**
+ * This JSON file contains the settings for the Visual Studio Code extension in the .github folder of the Git repository.
+ * The file path is /c:/Users/Theca/OneDrive/Desktop/desktop-development (2)/desktop-tutorial/git/.github/.vscode/settings.json
+ */
+{
+    "C_Cpp.default.compilerPath": "c:\\Users\\Theca\\OneDrive\\Desktop\\desktop-development (2)\\desktop-tutorial\\git\\.github\\.vscode\\launch.json",
+    "git.openRepositoryInParentFolders": "always"
+}

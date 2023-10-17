@@ -1,3 +1,7 @@
+/**
+ * This GitHub Actions workflow is used to run Coverity static analysis on the codebase.
+ */
+name: Coverity
 name: Coverity
 
 # This GitHub workflow automates submitting builds to Coverity Scan. To enable it,
@@ -52,6 +56,12 @@ jobs:
       - name: get the Coverity Build Tool hash
         id: lookup
         run: |
+<<<<<<< HEAD
+=======
+
+
+
+>>>>>>> 8a18814... Cloud patch for git
           case "${{ matrix.os }}" in
           *windows*)
             COVERITY_PLATFORM=win64
