@@ -33,15 +33,31 @@
 /*
  * List of all available backends
  */
-static struct ref_storage_be *refs_backends = &refs_be_files;
+static const struct ref_storage_be *refs_backends[] = {
+	[REF_STORAGE_FORMAT_FILES] = &refs_be_files,
+};
 
-static struct ref_storage_be *find_ref_storage_backend(const char *name)
+static const struct ref_storage_be *find_ref_storage_backend(unsigned int ref_storage_format)
 {
-	struct ref_storage_be *be;
-	for (be = refs_backends; be; be = be->next)
-		if (!strcmp(be->name, name))
-			return be;
+	if (ref_storage_format < ARRAY_SIZE(refs_backends))
+		return refs_backends[ref_storage_format];
 	return NULL;
+}
+
+unsigned int ref_storage_format_by_name(const char *name)
+{
+	for (unsigned int i = 0; i < ARRAY_SIZE(refs_backends); i++)
+		if (refs_backends[i] && !strcmp(refs_backends[i]->name, name))
+			return i;
+	return REF_STORAGE_FORMAT_UNKNOWN;
+}
+
+const char *ref_storage_format_to_name(unsigned int ref_storage_format)
+{
+	const struct ref_storage_be *be = find_ref_storage_backend(ref_storage_format);
+	if (!be)
+		return "unknown";
+	return be->name;
 }
 
 /*
@@ -1806,8 +1822,10 @@ static int refs_read_special_head(struct ref_store *ref_store,
 	int result = -1;
 	strbuf_addf(&full_path, "%s/%s", ref_store->gitdir, refname);
 
-	if (strbuf_read_file(&content, full_path.buf, 0) < 0)
+	if (strbuf_read_file(&content, full_path.buf, 0) < 0) {
+		*failure_errno = errno;
 		goto done;
+	}
 
 	result = parse_loose_ref_contents(content.buf, oid, referent, type,
 					  failure_errno);
@@ -1818,15 +1836,66 @@ done:
 	return result;
 }
 
+static int is_special_ref(const char *refname)
+{
+	/*
+	 * Special references get written and read directly via the filesystem
+	 * by the subsystems that create them. Thus, they must not go through
+	 * the reference backend but must instead be read directly. It is
+	 * arguable whether this behaviour is sensible, or whether it's simply
+	 * a leaky abstraction enabled by us only having a single reference
+	 * backend implementation. But at least for a subset of references it
+	 * indeed does make sense to treat them specially:
+	 *
+	 * - FETCH_HEAD may contain multiple object IDs, and each one of them
+	 *   carries additional metadata like where it came from.
+	 *
+	 * - MERGE_HEAD may contain multiple object IDs when merging multiple
+	 *   heads.
+	 *
+	 * There are some exceptions that you might expect to see on this list
+	 * but which are handled exclusively via the reference backend:
+	 *
+	 * - BISECT_EXPECTED_REV
+	 *
+	 * - CHERRY_PICK_HEAD
+	 *
+	 * - HEAD
+	 *
+	 * - ORIG_HEAD
+	 *
+	 * - "rebase-apply/" and "rebase-merge/" contain all of the state for
+	 *   rebases, including some reference-like files. These are
+	 *   exclusively read and written via the filesystem and never go
+	 *   through the refdb.
+	 *
+	 * Writing or deleting references must consistently go either through
+	 * the filesystem (special refs) or through the reference backend
+	 * (normal ones).
+	 */
+	static const char * const special_refs[] = {
+		"AUTO_MERGE",
+		"FETCH_HEAD",
+		"MERGE_AUTOSTASH",
+		"MERGE_HEAD",
+	};
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(special_refs); i++)
+		if (!strcmp(refname, special_refs[i]))
+			return 1;
+
+	return 0;
+}
+
 int refs_read_raw_ref(struct ref_store *ref_store, const char *refname,
 		      struct object_id *oid, struct strbuf *referent,
 		      unsigned int *type, int *failure_errno)
 {
 	assert(failure_errno);
-	if (!strcmp(refname, "FETCH_HEAD") || !strcmp(refname, "MERGE_HEAD")) {
+	if (is_special_ref(refname))
 		return refs_read_special_head(ref_store, refname, oid, referent,
 					      type, failure_errno);
-	}
 
 	return ref_store->be->read_raw_ref(ref_store, refname, oid, referent,
 					   type, failure_errno);
@@ -2029,12 +2098,12 @@ static struct ref_store *ref_store_init(struct repository *repo,
 					const char *gitdir,
 					unsigned int flags)
 {
-	const char *be_name = "files";
-	struct ref_storage_be *be = find_ref_storage_backend(be_name);
+	const struct ref_storage_be *be;
 	struct ref_store *refs;
 
+	be = find_ref_storage_backend(repo->ref_storage_format);
 	if (!be)
-		BUG("reference backend %s is unknown", be_name);
+		BUG("reference backend is unknown");
 
 	refs = be->init(repo, gitdir, flags);
 	return refs;
@@ -2599,13 +2668,55 @@ void ref_transaction_for_each_queued_update(struct ref_transaction *transaction,
 int refs_delete_refs(struct ref_store *refs, const char *logmsg,
 		     struct string_list *refnames, unsigned int flags)
 {
+	struct ref_transaction *transaction;
+	struct strbuf err = STRBUF_INIT;
+	struct string_list_item *item;
+	int ret = 0, failures = 0;
 	char *msg;
-	int retval;
+
+	if (!refnames->nr)
+		return 0;
 
 	msg = normalize_reflog_message(logmsg);
-	retval = refs->be->delete_refs(refs, msg, refnames, flags);
+
+	/*
+	 * Since we don't check the references' old_oids, the
+	 * individual updates can't fail, so we can pack all of the
+	 * updates into a single transaction.
+	 */
+	transaction = ref_store_transaction_begin(refs, &err);
+	if (!transaction) {
+		ret = error("%s", err.buf);
+		goto out;
+	}
+
+	for_each_string_list_item(item, refnames) {
+		ret = ref_transaction_delete(transaction, item->string,
+					     NULL, flags, msg, &err);
+		if (ret) {
+			warning(_("could not delete reference %s: %s"),
+				item->string, err.buf);
+			strbuf_reset(&err);
+			failures = 1;
+		}
+	}
+
+	ret = ref_transaction_commit(transaction, &err);
+	if (ret) {
+		if (refnames->nr == 1)
+			error(_("could not delete reference %s: %s"),
+			      refnames->items[0].string, err.buf);
+		else
+			error(_("could not delete references: %s"), err.buf);
+	}
+
+out:
+	if (!ret && failures)
+		ret = -1;
+	ref_transaction_free(transaction);
+	strbuf_release(&err);
 	free(msg);
-	return retval;
+	return ret;
 }
 
 int delete_refs(const char *msg, struct string_list *refnames,

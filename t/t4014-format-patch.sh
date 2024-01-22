@@ -1906,6 +1906,16 @@ body" &&
 	grep "^body$" actual
 '
 
+test_expect_success 'cover letter with --cover-from-description subject (UTF-8 subject line)' '
+	test_config branch.rebuild-1.description "Café?
+
+body" &&
+	git checkout rebuild-1 &&
+	git format-patch --stdout --cover-letter --cover-from-description subject --encode-email-headers main >actual &&
+	grep "^Subject: \[PATCH 0/2\] =?UTF-8?q?Caf=C3=A9=3F?=$" actual &&
+	! grep "Café" actual
+'
+
 test_expect_success 'cover letter with format.coverFromDescription = auto (short subject line)' '
 	test_config branch.rebuild-1.description "config subject
 
@@ -2403,25 +2413,25 @@ test_expect_success 'interdiff: cover-letter' '
 	--q
 	EOF
 	git format-patch --cover-letter --interdiff=boop~2 -1 boop &&
-	test_i18ngrep "^Interdiff:$" 0000-cover-letter.patch &&
-	test_i18ngrep ! "^Interdiff:$" 0001-fleep.patch &&
+	test_grep "^Interdiff:$" 0000-cover-letter.patch &&
+	test_grep ! "^Interdiff:$" 0001-fleep.patch &&
 	sed "1,/^@@ /d; /^-- $/q" 0000-cover-letter.patch >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'interdiff: reroll-count' '
 	git format-patch --cover-letter --interdiff=boop~2 -v2 -1 boop &&
-	test_i18ngrep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
+	test_grep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
 '
 
 test_expect_success 'interdiff: reroll-count with a non-integer' '
 	git format-patch --cover-letter --interdiff=boop~2 -v2.2 -1 boop &&
-	test_i18ngrep "^Interdiff:$" v2.2-0000-cover-letter.patch
+	test_grep "^Interdiff:$" v2.2-0000-cover-letter.patch
 '
 
 test_expect_success 'interdiff: reroll-count with a integer' '
 	git format-patch --cover-letter --interdiff=boop~2 -v2 -1 boop &&
-	test_i18ngrep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
+	test_grep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
 '
 
 test_expect_success 'interdiff: solo-patch' '
@@ -2430,7 +2440,7 @@ test_expect_success 'interdiff: solo-patch' '
 
 	EOF
 	git format-patch --interdiff=boop~2 -1 boop &&
-	test_i18ngrep "^Interdiff:$" 0001-fleep.patch &&
+	test_grep "^Interdiff:$" 0001-fleep.patch &&
 	sed "1,/^  @@ /d; /^$/q" 0001-fleep.patch >actual &&
 	test_cmp expect actual
 '

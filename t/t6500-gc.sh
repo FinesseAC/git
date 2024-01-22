@@ -41,7 +41,7 @@ test_expect_success 'gc does not leave behind pid file' '
 
 test_expect_success 'gc --gobbledegook' '
 	test_expect_code 129 git gc --nonsense 2>err &&
-	test_i18ngrep "[Uu]sage: git gc" err
+	test_grep "[Uu]sage: git gc" err
 '
 
 test_expect_success 'gc -h with invalid configuration' '
@@ -52,7 +52,7 @@ test_expect_success 'gc -h with invalid configuration' '
 		echo "[gc] pruneexpire = CORRUPT" >>.git/config &&
 		test_expect_code 129 git gc -h >usage 2>&1
 	) &&
-	test_i18ngrep "[Uu]sage" broken/usage
+	test_grep "[Uu]sage" broken/usage
 '
 
 test_expect_success 'gc is not aborted due to a stale symref' '
@@ -155,7 +155,7 @@ test_expect_success 'auto gc with too many loose objects does not attempt to cre
 	test_commit "$(test_oid obj4)" &&
 
 	git gc --auto 2>err &&
-	test_i18ngrep ! "^warning:" err &&
+	test_grep ! "^warning:" err &&
 	ls .git/objects/pack/pack-*.pack | sort >post_packs &&
 	comm -1 -3 existing_packs post_packs >new &&
 	comm -2 -3 existing_packs post_packs >del &&
@@ -166,15 +166,15 @@ test_expect_success 'auto gc with too many loose objects does not attempt to cre
 test_expect_success 'gc --no-quiet' '
 	GIT_PROGRESS_DELAY=0 git -c gc.writeCommitGraph=true gc --no-quiet >stdout 2>stderr &&
 	test_must_be_empty stdout &&
-	test_i18ngrep "Computing commit graph generation numbers" stderr
+	test_grep "Computing commit graph generation numbers" stderr
 '
 
 test_expect_success TTY 'with TTY: gc --no-quiet' '
 	test_terminal env GIT_PROGRESS_DELAY=0 \
 		git -c gc.writeCommitGraph=true gc --no-quiet >stdout 2>stderr &&
 	test_must_be_empty stdout &&
-	test_i18ngrep "Enumerating objects" stderr &&
-	test_i18ngrep "Computing commit graph generation numbers" stderr
+	test_grep "Enumerating objects" stderr &&
+	test_grep "Computing commit graph generation numbers" stderr
 '
 
 test_expect_success 'gc --quiet' '
@@ -327,6 +327,33 @@ test_expect_success 'gc.bigPackThreshold ignores cruft packs' '
 	)
 '
 
+cruft_max_size_opts="git repack -d -l --cruft --cruft-expiration=2.weeks.ago"
+
+test_expect_success 'setup for --max-cruft-size tests' '
+	git init cruft--max-size &&
+	(
+		cd cruft--max-size &&
+		prepare_cruft_history
+	)
+'
+
+test_expect_success '--max-cruft-size sets appropriate repack options' '
+	GIT_TRACE2_EVENT=$(pwd)/trace2.txt git -C cruft--max-size \
+		gc --cruft --max-cruft-size=1M &&
+	test_subcommand $cruft_max_size_opts --max-cruft-size=1048576 <trace2.txt
+'
+
+test_expect_success 'gc.maxCruftSize sets appropriate repack options' '
+	GIT_TRACE2_EVENT=$(pwd)/trace2.txt \
+		git -C cruft--max-size -c gc.maxCruftSize=2M gc --cruft &&
+	test_subcommand $cruft_max_size_opts --max-cruft-size=2097152 <trace2.txt &&
+
+	GIT_TRACE2_EVENT=$(pwd)/trace2.txt \
+		git -C cruft--max-size -c gc.maxCruftSize=2M gc --cruft \
+		--max-cruft-size=3M &&
+	test_subcommand $cruft_max_size_opts --max-cruft-size=3145728 <trace2.txt
+'
+
 run_and_wait_for_auto_gc () {
 	# We read stdout from gc for the side effect of waiting until the
 	# background gc process exits, closing its fd 9.  Furthermore, the
@@ -345,7 +372,7 @@ test_expect_success 'background auto gc does not run if gc.log is present and re
 	test_config gc.autodetach true &&
 	echo fleem >.git/gc.log &&
 	git gc --auto 2>err &&
-	test_i18ngrep "^warning:" err &&
+	test_grep "^warning:" err &&
 	test_config gc.logexpiry 5.days &&
 	test-tool chmtime =-345600 .git/gc.log &&
 	git gc --auto &&

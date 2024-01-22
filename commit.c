@@ -8,7 +8,6 @@
 #include "repository.h"
 #include "object-name.h"
 #include "object-store-ll.h"
-#include "pkt-line.h"
 #include "utf8.h"
 #include "diff.h"
 #include "revision.h"
@@ -23,11 +22,11 @@
 #include "advice.h"
 #include "refs.h"
 #include "commit-reach.h"
-#include "run-command.h"
 #include "setup.h"
 #include "shallow.h"
 #include "tree.h"
 #include "hook.h"
+#include "parse.h"
 
 static struct commit_extra_header *read_commit_extra_header_lines(const char *buf, size_t len, const char **);
 
@@ -572,8 +571,21 @@ int repo_parse_commit_internal(struct repository *r,
 		return -1;
 	if (item->object.parsed)
 		return 0;
-	if (use_commit_graph && parse_commit_in_graph(r, item))
+	if (use_commit_graph && parse_commit_in_graph(r, item)) {
+		static int commit_graph_paranoia = -1;
+
+		if (commit_graph_paranoia == -1)
+			commit_graph_paranoia = git_env_bool(GIT_COMMIT_GRAPH_PARANOIA, 0);
+
+		if (commit_graph_paranoia && !has_object(r, &item->object.oid, 0)) {
+			unparse_commit(r, &item->object.oid);
+			return quiet_on_missing ? -1 :
+				error(_("commit %s exists in commit-graph but not in the object database"),
+				      oid_to_hex(&item->object.oid));
+		}
+
 		return 0;
+	}
 
 	if (oid_object_info_extended(r, &item->object.oid, &oi, flags) < 0)
 		return quiet_on_missing ? -1 :
@@ -1769,7 +1781,7 @@ const char *find_commit_header(const char *msg, const char *key, size_t *out_len
  * Returns the number of bytes from the tail to ignore, to be fed as
  * the second parameter to append_signoff().
  */
-size_t ignore_non_trailer(const char *buf, size_t len)
+size_t ignored_log_message_bytes(const char *buf, size_t len)
 {
 	size_t boc = 0;
 	size_t bol = 0;

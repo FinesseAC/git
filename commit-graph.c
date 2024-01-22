@@ -1,14 +1,13 @@
 #include "git-compat-util.h"
 #include "config.h"
+#include "csum-file.h"
 #include "gettext.h"
 #include "hex.h"
 #include "lockfile.h"
-#include "pack.h"
 #include "packfile.h"
 #include "commit.h"
 #include "object.h"
 #include "refs.h"
-#include "revision.h"
 #include "hash-lookup.h"
 #include "commit-graph.h"
 #include "object-file.h"
@@ -275,31 +274,25 @@ struct commit_graph *load_commit_graph_one_fd_st(struct repository *r,
 	return ret;
 }
 
-static int verify_commit_graph_lite(struct commit_graph *g)
+static int graph_read_oid_fanout(const unsigned char *chunk_start,
+				 size_t chunk_size, void *data)
 {
-	/*
-	 * Basic validation shared between parse_commit_graph()
-	 * which'll be called every time the graph is used, and the
-	 * much more expensive verify_commit_graph() used by
-	 * "commit-graph verify".
-	 *
-	 * There should only be very basic checks here to ensure that
-	 * we don't e.g. segfault in fill_commit_in_graph(), but
-	 * because this is a very hot codepath nothing that e.g. loops
-	 * over g->num_commits, or runs a checksum on the commit-graph
-	 * itself.
-	 */
-	if (!g->chunk_oid_fanout) {
-		error("commit-graph is missing the OID Fanout chunk");
-		return 1;
-	}
-	if (!g->chunk_oid_lookup) {
-		error("commit-graph is missing the OID Lookup chunk");
-		return 1;
-	}
-	if (!g->chunk_commit_data) {
-		error("commit-graph is missing the Commit Data chunk");
-		return 1;
+	struct commit_graph *g = data;
+	int i;
+
+	if (chunk_size != 256 * sizeof(uint32_t))
+		return error(_("commit-graph oid fanout chunk is wrong size"));
+	g->chunk_oid_fanout = (const uint32_t *)chunk_start;
+	g->num_commits = ntohl(g->chunk_oid_fanout[255]);
+
+	for (i = 0; i < 255; i++) {
+		uint32_t oid_fanout1 = ntohl(g->chunk_oid_fanout[i]);
+		uint32_t oid_fanout2 = ntohl(g->chunk_oid_fanout[i + 1]);
+
+		if (oid_fanout1 > oid_fanout2) {
+			error(_("commit-graph fanout values out of order"));
+			return 1;
+		}
 	}
 
 	return 0;
@@ -310,7 +303,40 @@ static int graph_read_oid_lookup(const unsigned char *chunk_start,
 {
 	struct commit_graph *g = data;
 	g->chunk_oid_lookup = chunk_start;
-	g->num_commits = chunk_size / g->hash_len;
+	if (chunk_size / g->hash_len != g->num_commits)
+		return error(_("commit-graph OID lookup chunk is the wrong size"));
+	return 0;
+}
+
+static int graph_read_commit_data(const unsigned char *chunk_start,
+				  size_t chunk_size, void *data)
+{
+	struct commit_graph *g = data;
+	if (chunk_size / GRAPH_DATA_WIDTH != g->num_commits)
+		return error(_("commit-graph commit data chunk is wrong size"));
+	g->chunk_commit_data = chunk_start;
+	return 0;
+}
+
+static int graph_read_generation_data(const unsigned char *chunk_start,
+				      size_t chunk_size, void *data)
+{
+	struct commit_graph *g = data;
+	if (chunk_size / sizeof(uint32_t) != g->num_commits)
+		return error(_("commit-graph generations chunk is wrong size"));
+	g->chunk_generation_data = chunk_start;
+	return 0;
+}
+
+static int graph_read_bloom_index(const unsigned char *chunk_start,
+				  size_t chunk_size, void *data)
+{
+	struct commit_graph *g = data;
+	if (chunk_size / 4 != g->num_commits) {
+		warning(_("commit-graph changed-path index chunk is too small"));
+		return -1;
+	}
+	g->chunk_bloom_indexes = chunk_start;
 	return 0;
 }
 
@@ -319,7 +345,17 @@ static int graph_read_bloom_data(const unsigned char *chunk_start,
 {
 	struct commit_graph *g = data;
 	uint32_t hash_version;
+
+	if (chunk_size < BLOOMDATA_CHUNK_HEADER_SIZE) {
+		warning(_("ignoring too-small changed-path chunk"
+			" (%"PRIuMAX" < %"PRIuMAX") in commit-graph file"),
+			(uintmax_t)chunk_size,
+			(uintmax_t)BLOOMDATA_CHUNK_HEADER_SIZE);
+		return -1;
+	}
+
 	g->chunk_bloom_data = chunk_start;
+	g->chunk_bloom_data_size = chunk_size;
 	hash_version = get_be32(chunk_start);
 
 	if (hash_version != 1)
@@ -391,29 +427,41 @@ struct commit_graph *parse_commit_graph(struct repo_settings *s,
 	cf = init_chunkfile(NULL);
 
 	if (read_table_of_contents(cf, graph->data, graph_size,
-				   GRAPH_HEADER_SIZE, graph->num_chunks))
+				   GRAPH_HEADER_SIZE, graph->num_chunks, 1))
 		goto free_and_return;
 
-	pair_chunk(cf, GRAPH_CHUNKID_OIDFANOUT,
-		   (const unsigned char **)&graph->chunk_oid_fanout);
-	read_chunk(cf, GRAPH_CHUNKID_OIDLOOKUP, graph_read_oid_lookup, graph);
-	pair_chunk(cf, GRAPH_CHUNKID_DATA, &graph->chunk_commit_data);
-	pair_chunk(cf, GRAPH_CHUNKID_EXTRAEDGES, &graph->chunk_extra_edges);
-	pair_chunk(cf, GRAPH_CHUNKID_BASE, &graph->chunk_base_graphs);
+	if (read_chunk(cf, GRAPH_CHUNKID_OIDFANOUT, graph_read_oid_fanout, graph)) {
+		error(_("commit-graph required OID fanout chunk missing or corrupted"));
+		goto free_and_return;
+	}
+	if (read_chunk(cf, GRAPH_CHUNKID_OIDLOOKUP, graph_read_oid_lookup, graph)) {
+		error(_("commit-graph required OID lookup chunk missing or corrupted"));
+		goto free_and_return;
+	}
+	if (read_chunk(cf, GRAPH_CHUNKID_DATA, graph_read_commit_data, graph)) {
+		error(_("commit-graph required commit data chunk missing or corrupted"));
+		goto free_and_return;
+	}
+
+	pair_chunk(cf, GRAPH_CHUNKID_EXTRAEDGES, &graph->chunk_extra_edges,
+		   &graph->chunk_extra_edges_size);
+	pair_chunk(cf, GRAPH_CHUNKID_BASE, &graph->chunk_base_graphs,
+		   &graph->chunk_base_graphs_size);
 
 	if (s->commit_graph_generation_version >= 2) {
-		pair_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA,
-			&graph->chunk_generation_data);
+		read_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA,
+			   graph_read_generation_data, graph);
 		pair_chunk(cf, GRAPH_CHUNKID_GENERATION_DATA_OVERFLOW,
-			&graph->chunk_generation_data_overflow);
+			   &graph->chunk_generation_data_overflow,
+			   &graph->chunk_generation_data_overflow_size);
 
 		if (graph->chunk_generation_data)
 			graph->read_generation_data = 1;
 	}
 
 	if (s->commit_graph_read_changed_paths) {
-		pair_chunk(cf, GRAPH_CHUNKID_BLOOMINDEXES,
-			   &graph->chunk_bloom_indexes);
+		read_chunk(cf, GRAPH_CHUNKID_BLOOMINDEXES,
+			   graph_read_bloom_index, graph);
 		read_chunk(cf, GRAPH_CHUNKID_BLOOMDATA,
 			   graph_read_bloom_data, graph);
 	}
@@ -428,9 +476,6 @@ struct commit_graph *parse_commit_graph(struct repo_settings *s,
 	}
 
 	oidread(&graph->oid, graph->data + graph->data_len - graph->hash_len);
-
-	if (verify_commit_graph_lite(graph))
-		goto free_and_return;
 
 	free_chunkfile(cf);
 	return graph;
@@ -510,6 +555,11 @@ static int add_graph_to_chain(struct commit_graph *g,
 		return 0;
 	}
 
+	if (g->chunk_base_graphs_size / g->hash_len < n) {
+		warning(_("commit-graph base graphs chunk is too small"));
+		return 0;
+	}
+
 	while (n) {
 		n--;
 
@@ -554,7 +604,7 @@ int open_commit_graph_chain(const char *chain_file,
 			/* treat empty files the same as missing */
 			errno = ENOENT;
 		} else {
-			warning("commit-graph chain file too small");
+			warning(_("commit-graph chain file too small"));
 			errno = EINVAL;
 		}
 		return 0;
@@ -756,6 +806,9 @@ struct bloom_filter_settings *get_bloom_filter_settings(struct repository *r)
 
 void close_commit_graph(struct raw_object_store *o)
 {
+	if (!o->commit_graph)
+		return;
+
 	clear_commit_graph_data_slab(&commit_graph_data_slab);
 	free_commit_graph(o->commit_graph);
 	o->commit_graph = NULL;
@@ -837,7 +890,10 @@ static void fill_commit_graph_info(struct commit *item, struct commit_graph *g, 
 				die(_("commit-graph requires overflow generation data but has none"));
 
 			offset_pos = offset ^ CORRECTED_COMMIT_DATE_OFFSET_OVERFLOW;
-			graph_data->generation = item->date + get_be64(g->chunk_generation_data_overflow + st_mult(8, offset_pos));
+			if (g->chunk_generation_data_overflow_size / sizeof(uint64_t) <= offset_pos)
+				die(_("commit-graph overflow generation data is too small"));
+			graph_data->generation = item->date +
+				get_be64(g->chunk_generation_data_overflow + sizeof(uint64_t) * offset_pos);
 		} else
 			graph_data->generation = item->date + offset;
 	} else
@@ -857,7 +913,7 @@ static int fill_commit_in_graph(struct repository *r,
 				struct commit_graph *g, uint32_t pos)
 {
 	uint32_t edge_value;
-	uint32_t *parent_data_ptr;
+	uint32_t parent_data_pos;
 	struct commit_list **pptr;
 	const unsigned char *commit_data;
 	uint32_t lex_index;
@@ -889,14 +945,21 @@ static int fill_commit_in_graph(struct repository *r,
 		return 1;
 	}
 
-	parent_data_ptr = (uint32_t*)(g->chunk_extra_edges +
-			  st_mult(4, edge_value & GRAPH_EDGE_LAST_MASK));
+	parent_data_pos = edge_value & GRAPH_EDGE_LAST_MASK;
 	do {
-		edge_value = get_be32(parent_data_ptr);
+		if (g->chunk_extra_edges_size / sizeof(uint32_t) <= parent_data_pos) {
+			error(_("commit-graph extra-edges pointer out of bounds"));
+			free_commit_list(item->parents);
+			item->parents = NULL;
+			item->object.parsed = 0;
+			return 0;
+		}
+		edge_value = get_be32(g->chunk_extra_edges +
+				      sizeof(uint32_t) * parent_data_pos);
 		pptr = insert_parent_or_die(r, g,
 					    edge_value & GRAPH_EDGE_LAST_MASK,
 					    pptr);
-		parent_data_ptr++;
+		parent_data_pos++;
 	} while (!(edge_value & GRAPH_LAST_EDGE));
 
 	return 1;
@@ -939,14 +1002,18 @@ int repo_find_commit_pos_in_graph(struct repository *r, struct commit *c,
 
 struct commit *lookup_commit_in_graph(struct repository *repo, const struct object_id *id)
 {
+	static int commit_graph_paranoia = -1;
 	struct commit *commit;
 	uint32_t pos;
+
+	if (commit_graph_paranoia == -1)
+		commit_graph_paranoia = git_env_bool(GIT_COMMIT_GRAPH_PARANOIA, 0);
 
 	if (!prepare_commit_graph(repo))
 		return NULL;
 	if (!search_commit_pos_in_graph(id, repo->objects->commit_graph, &pos))
 		return NULL;
-	if (!has_object(repo, id, 0))
+	if (commit_graph_paranoia && !has_object(repo, id, 0))
 		return NULL;
 
 	commit = lookup_commit(repo, id);
@@ -2600,10 +2667,6 @@ static int verify_one_commit_graph(struct repository *r,
 	struct object_id prev_oid, cur_oid;
 	struct commit *seen_gen_zero = NULL;
 	struct commit *seen_gen_non_zero = NULL;
-
-	verify_commit_graph_error = verify_commit_graph_lite(g);
-	if (verify_commit_graph_error)
-		return verify_commit_graph_error;
 
 	if (!commit_graph_checksum_valid(g)) {
 		graph_report(_("the commit-graph file has incorrect checksum and is likely corrupt"));

@@ -1522,6 +1522,10 @@ class LargeFileSystem(object):
            file is stored in the large file system and handles all necessary
            steps.
            """
+        # symlinks aren't processed by smudge/clean filters
+        if git_mode == "120000":
+            return (git_mode, contents)
+
         if self.exceedsLargeFileThreshold(relPath, contents) or self.hasLargeFileExtension(relPath):
             contentTempFile = self.generateTempFile(contents)
             pointer_git_mode, contents, localLargeFile = self.generatePointer(contentTempFile)
@@ -4247,7 +4251,8 @@ class P4Sync(Command, P4UserMap):
         if self.tempBranches != []:
             for branch in self.tempBranches:
                 read_pipe(["git", "update-ref", "-d", branch])
-            os.rmdir(os.path.join(os.environ.get("GIT_DIR", ".git"), self.tempBranchLocation))
+            if len(read_pipe(["git", "for-each-ref", self.tempBranchLocation])) > 0:
+                   die("There are unexpected temporary branches")
 
         # Create a symbolic ref p4/HEAD pointing to p4/<branch> to allow
         # a convenient shortcut refname "p4".

@@ -7,7 +7,6 @@
 #include "commit.h"
 #include "tag.h"
 #include "pkt-line.h"
-#include "remote.h"
 #include "refs.h"
 #include "oid-array.h"
 #include "path.h"
@@ -38,8 +37,10 @@ int register_shallow(struct repository *r, const struct object_id *oid)
 
 	oidcpy(&graft->oid, oid);
 	graft->nr_parent = -1;
-	if (commit && commit->object.parsed)
+	if (commit && commit->object.parsed) {
+		free_commit_list(commit->parents);
 		commit->parents = NULL;
+	}
 	return register_commit_graft(r, graft, 0);
 }
 

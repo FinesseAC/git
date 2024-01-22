@@ -87,7 +87,7 @@ maintainer.
 Under truly exceptional circumstances where you absolutely must depend
 on a select few topic branches that are already in `next` but not in
 `master`, you may want to create your own custom base-branch by forking
-`master` and merging the required topic branches to it. You could then
+`master` and merging the required topic branches into it. You could then
 work on top of this base-branch.  But keep in mind that this base-branch
 would only be known privately to you.  So when you are ready to send
 your patches to the list, be sure to communicate how you created it in
@@ -266,7 +266,7 @@ date)", like this:
 	noticed that ...
 ....
 
-The "Copy commit summary" command of gitk can be used to obtain this
+The "Copy commit reference" command of gitk can be used to obtain this
 format (with the subject enclosed in a pair of double-quotes), or this
 invocation of `git show`:
 
@@ -355,9 +355,21 @@ If you like, you can put extra tags at the end:
   patch after a detailed analysis.
 . `Tested-by:` is used to indicate that the person applied the patch
   and found it to have the desired effect.
+. `Co-authored-by:` is used to indicate that people exchanged drafts
+   of a patch before submitting it.
+. `Helped-by:` is used to credit someone who suggested ideas for
+  changes without providing the precise changes in patch form.
+. `Mentored-by:` is used to credit someone with helping develop a
+  patch as part of a mentorship program (e.g., GSoC or Outreachy).
+. `Suggested-by:` is used to credit someone with suggesting the idea
+  for a patch.
 
-You can also create your own tag or use one that's in common usage
-such as "Thanks-to:", "Based-on-patch-by:", or "Mentored-by:".
+While you can also create your own trailer if the situation warrants it, we
+encourage you to instead use one of the common trailers in this project
+highlighted above.
+
+Only capitalize the very first letter of tags, i.e. favor
+"Signed-off-by" over "Signed-Off-By" and "Acked-by:" over "Acked-By".
 
 [[git-tools]]
 === Generate your patch using Git tools out of your commits.
@@ -393,8 +405,8 @@ mailing list{security-ml}, instead of the public mailing list.
 
 Learn to use format-patch and send-email if possible.  These commands
 are optimized for the workflow of sending patches, avoiding many ways
-your existing e-mail client that is optimized for "multipart/*" mime
-type e-mails to corrupt and render your patches unusable.
+your existing e-mail client (often optimized for "multipart/*" MIME
+type e-mails) might render your patches unusable.
 
 People on the Git mailing list need to be able to read and
 comment on the changes you are submitting.  It is important for
@@ -515,8 +527,8 @@ repositories.
 
 	git://git.ozlabs.org/~paulus/gitk
 
-   Those who are interested in improve gitk can volunteer to help Paul
-   in maintaining it cf. <YntxL/fTplFm8lr6@cleo>.
+   Those who are interested in improving gitk can volunteer to help Paul
+   maintain it, cf. <YntxL/fTplFm8lr6@cleo>.
 
 - `po/` comes from the localization coordinator, Jiang Xin:
 
@@ -556,7 +568,7 @@ help you find out who they are.
 
 In any time between the (2)-(3) cycle, the maintainer may pick it up
 from the list and queue it to `seen`, in order to make it easier for
-people play with it without having to pick up and apply the patch to
+people to play with it without having to pick up and apply the patch to
 their trees themselves.
 
 [[patch-status]]
@@ -570,7 +582,7 @@ their trees themselves.
   master).
 
 * Read the Git mailing list, the maintainer regularly posts messages
-  entitled "What's cooking in git.git" and "What's in git.git" giving
+  entitled "What's cooking in git.git" giving
   the status of various proposed changes.
 
 == GitHub CI[[GHCI]]
@@ -590,11 +602,12 @@ After the initial setup, CI will run whenever you push new changes
 to your fork of Git on GitHub.  You can monitor the test state of all your
 branches here: `https://github.com/<Your GitHub handle>/git/actions/workflows/main.yml`
 
-If a branch did not pass all test cases then it is marked with a red
-cross. In that case you can click on the failing job and navigate to
-"ci/run-build-and-tests.sh" and/or "ci/print-test-failures.sh". You
-can also download "Artifacts" which are tarred (or zipped) archives
-with test data relevant for debugging.
+If a branch does not pass all test cases then it will be marked with a
+red +x+, instead of a green check. In that case, you can click on the
+failing job and navigate to "ci/run-build-and-tests.sh" and/or
+"ci/print-test-failures.sh". You can also download "Artifacts" which
+are zip archives containing tarred (or zipped) archives with test data
+relevant for debugging.
 
 Then fix the problem and push your fix to your GitHub fork. This will
 trigger a new CI build to ensure all tests pass.
@@ -686,7 +699,7 @@ message to an external program, and this is a handy way to drive
 `git am`.  However, if the message is MIME encoded, what is
 piped into the program is the representation you see in your
 `*Article*` buffer after unwrapping MIME.  This is often not what
-you would want for two reasons.  It tends to screw up non ASCII
+you would want for two reasons.  It tends to screw up non-ASCII
 characters (most notably in people's names), and also
 whitespaces (fatal in patches).  Running "C-u g" to display the
 message in raw form before using "|" to run the pipe can work

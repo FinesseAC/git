@@ -19,6 +19,7 @@
 #include "repository.h"
 #include "lockfile.h"
 #include "mailmap.h"
+#include "attr.h"
 #include "exec-cmd.h"
 #include "strbuf.h"
 #include "quote.h"
@@ -29,15 +30,12 @@
 #include "pager.h"
 #include "path.h"
 #include "utf8.h"
-#include "dir.h"
 #include "color.h"
-#include "replace-object.h"
 #include "refs.h"
 #include "setup.h"
 #include "strvec.h"
 #include "trace2.h"
 #include "wildmatch.h"
-#include "worktree.h"
 #include "ws.h"
 #include "write-or-die.h"
 
@@ -1385,10 +1383,15 @@ static int git_default_core_config(const char *var, const char *value,
 		return 0;
 	}
 	if (!strcmp(var, "core.checkstat")) {
+		if (!value)
+			return config_error_nonbool(var);
 		if (!strcasecmp(value, "default"))
 			check_stat = 1;
 		else if (!strcasecmp(value, "minimal"))
 			check_stat = 0;
+		else
+			return error(_("invalid value for '%s': '%s'"),
+				     var, value);
 	}
 
 	if (!strcmp(var, "core.quotepath")) {
@@ -1545,12 +1548,12 @@ static int git_default_core_config(const char *var, const char *value,
 		return 0;
 	}
 
-	if (!strcmp(var, "core.checkroundtripencoding")) {
-		check_roundtrip_encoding = xstrdup(value);
-		return 0;
-	}
+	if (!strcmp(var, "core.checkroundtripencoding"))
+		return git_config_string(&check_roundtrip_encoding, var, value);
 
 	if (!strcmp(var, "core.notesref")) {
+		if (!value)
+			return config_error_nonbool(var);
 		notes_ref_name = xstrdup(value);
 		return 0;
 	}
@@ -1618,6 +1621,8 @@ static int git_default_core_config(const char *var, const char *value,
 	}
 
 	if (!strcmp(var, "core.createobject")) {
+		if (!value)
+			return config_error_nonbool(var);
 		if (!strcmp(value, "rename"))
 			object_creation_mode = OBJECT_CREATION_USES_RENAMES;
 		else if (!strcmp(value, "link"))
@@ -1760,6 +1765,18 @@ static int git_default_mailmap_config(const char *var, const char *value)
 	return 0;
 }
 
+static int git_default_attr_config(const char *var, const char *value)
+{
+	if (!strcmp(var, "attr.tree"))
+		return git_config_string(&git_attr_tree, var, value);
+
+	/*
+	 * Add other attribute related config variables here and to
+	 * Documentation/config/attr.txt.
+	 */
+	return 0;
+}
+
 int git_default_config(const char *var, const char *value,
 		       const struct config_context *ctx, void *cb)
 {
@@ -1782,6 +1799,9 @@ int git_default_config(const char *var, const char *value,
 
 	if (starts_with(var, "mailmap."))
 		return git_default_mailmap_config(var, value);
+
+	if (starts_with(var, "attr."))
+		return git_default_attr_config(var, value);
 
 	if (starts_with(var, "advice.") || starts_with(var, "color.advice"))
 		return git_default_advice_config(var, value);
